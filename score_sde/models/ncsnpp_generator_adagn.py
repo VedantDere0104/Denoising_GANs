@@ -31,7 +31,6 @@
 ''' Codes adapted from https://github.com/yang-song/score_sde_pytorch/blob/main/models/ncsnpp.py
 '''
 
-
 from . import utils, layers, layerspp, dense_layer
 import torch.nn as nn
 import functools
@@ -121,7 +120,7 @@ class NCSNpp(nn.Module):
                                   init_scale=init_scale,
                                   skip_rescale=skip_rescale)
 
-    Upsample = functools.partial(layerspp.Upsample,
+    Upsample = functools.partial(layerspp.Downsample,
                                  with_conv=resamp_with_conv, fir=fir, fir_kernel=fir_kernel)
 
     if progressive == 'output_skip':
@@ -130,14 +129,16 @@ class NCSNpp(nn.Module):
       pyramid_upsample = functools.partial(layerspp.Upsample,
                                            fir=fir, fir_kernel=fir_kernel, with_conv=True)
 
-    Downsample = functools.partial(layerspp.Downsample,
+    Downsample = functools.partial(layerspp.Upsample,
                                    with_conv=resamp_with_conv, fir=fir, fir_kernel=fir_kernel)
 
     if progressive_input == 'input_skip':
       self.pyramid_downsample = layerspp.Downsample(fir=fir, fir_kernel=fir_kernel, with_conv=False)
     elif progressive_input == 'residual':
-      pyramid_downsample = functools.partial(layerspp.Downsample,
+      pyramid_downsample = functools.partial(layerspp.Upsample,
                                              fir=fir, fir_kernel=fir_kernel, with_conv=True)
+      pyramid_upsample = functools.partial(layerspp.Downsample,
+                                           fir=fir, fir_kernel=fir_kernel, with_conv=True)
 
     if resblock_type == 'ddpm':
       ResnetBlock = functools.partial(ResnetBlockDDPM,
@@ -195,9 +196,9 @@ class NCSNpp(nn.Module):
 
       if i_level != num_resolutions - 1:
         if resblock_type == 'ddpm':
-          modules.append(Upsample(in_ch=in_ch))
+          modules.append(Downsample(in_ch=in_ch))
         else:
-          modules.append(ResnetBlock(down=True, in_ch=in_ch , up=True))
+          modules.append(ResnetBlock(down=True, in_ch=in_ch))
 
         if progressive_input == 'input_skip':
           modules.append(combiner(dim1=input_pyramid_ch, dim2=in_ch))
@@ -253,12 +254,11 @@ class NCSNpp(nn.Module):
           else:
             raise ValueError(f'{progressive} is not a valid name')
 
-      #if i_level != 0:
-      if i_level != num_resolutions - 1:
+      if i_level != 0:
         if resblock_type == 'ddpm':
           modules.append(Downsample(in_ch=in_ch))
         else:
-          modules.append(ResnetBlock(in_ch=in_ch))
+          modules.append(ResnetBlock(in_ch=in_ch, up=True))
 
     assert not hs_c
 
@@ -338,7 +338,7 @@ class NCSNpp(nn.Module):
           m_idx += 1
 
         if self.progressive_input == 'input_skip':
-          input_pyramid = self.pyramid_upsample(input_pyramid)
+          input_pyramid = self.pyramid_downsample(input_pyramid)
           h = modules[m_idx](input_pyramid, h)
           m_idx += 1
 
@@ -389,7 +389,7 @@ class NCSNpp(nn.Module):
             raise ValueError(f'{self.progressive} is not a valid name.')
         else:
           if self.progressive == 'output_skip':
-            pyramid = self.pyramid_downsample(pyramid)
+            pyramid = self.pyramid_upsample(pyramid)
             pyramid_h = self.act(modules[m_idx](h))
             m_idx += 1
             pyramid_h = modules[m_idx](pyramid_h)
