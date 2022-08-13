@@ -135,9 +135,9 @@ class NCSNpp(nn.Module):
     if progressive_input == 'input_skip':
       self.pyramid_downsample = layerspp.Downsample(fir=fir, fir_kernel=fir_kernel, with_conv=False)
     elif progressive_input == 'residual':
-      pyramid_downsample = functools.partial(layerspp.Upsample,
+      pyramid_downsample = functools.partial(layerspp.Downsample,
                                              fir=fir, fir_kernel=fir_kernel, with_conv=True)
-      pyramid_upsample = functools.partial(layerspp.Downsample,
+      pyramid_upsample = functools.partial(layerspp.Upsample,
                                            fir=fir, fir_kernel=fir_kernel, with_conv=True)
 
     if resblock_type == 'ddpm':
@@ -186,24 +186,24 @@ class NCSNpp(nn.Module):
     for i_level in range(num_resolutions):
       # Residual blocks for this resolution
       for i_block in range(num_res_blocks):
-        out_ch = nf * ch_mult[i_level]
+        out_ch = int(nf * ch_mult[i_level])
         modules.append(ResnetBlock(in_ch=in_ch, out_ch=out_ch))
         in_ch = out_ch
 
-        if all_resolutions[i_level] in attn_resolutions:
-          modules.append(AttnBlock(channels=in_ch))
+        # if all_resolutions[i_level] in attn_resolutions:
+        #   modules.append(AttnBlock(channels=in_ch))
         hs_c.append(in_ch)
 
       if i_level != num_resolutions - 1:
         if resblock_type == 'ddpm':
           modules.append(Downsample(in_ch=in_ch))
         else:
-          modules.append(ResnetBlock(down=True, in_ch=in_ch))
+          modules.append(ResnetBlock(in_ch=in_ch , up=True)) #down=True, 
 
         if progressive_input == 'input_skip':
           modules.append(combiner(dim1=input_pyramid_ch, dim2=in_ch))
-          if combine_method == 'cat':
-            in_ch *= 2
+          # if combine_method == 'cat':
+          #   in_ch *= 2
 
         elif progressive_input == 'residual':
           modules.append(pyramid_upsample(in_ch=input_pyramid_ch, out_ch=in_ch))
@@ -213,20 +213,20 @@ class NCSNpp(nn.Module):
 
     in_ch = hs_c[-1]
     modules.append(ResnetBlock(in_ch=in_ch))
-    modules.append(AttnBlock(channels=in_ch))
+    #modules.append(AttnBlock(channels=in_ch))
     modules.append(ResnetBlock(in_ch=in_ch))
 
     pyramid_ch = 0
     # Upsampling block
     for i_level in reversed(range(num_resolutions)):
       for i_block in range(num_res_blocks + 1):
-        out_ch = nf * ch_mult[i_level]
+        out_ch = int(nf * ch_mult[i_level])
         modules.append(ResnetBlock(in_ch=in_ch + hs_c.pop(),
                                    out_ch=out_ch))
         in_ch = out_ch
 
-      if all_resolutions[i_level] in attn_resolutions:
-        modules.append(AttnBlock(channels=in_ch))
+      # if all_resolutions[i_level] in attn_resolutions:
+      #   modules.append(AttnBlock(channels=in_ch))
 
       if progressive != 'none':
         if i_level == num_resolutions - 1:
@@ -236,6 +236,7 @@ class NCSNpp(nn.Module):
             modules.append(conv3x3(in_ch, channels, init_scale=init_scale))
             pyramid_ch = channels
           elif progressive == 'residual':
+            
             modules.append(nn.GroupNorm(num_groups=min(in_ch // 4, 32),
                                         num_channels=in_ch, eps=1e-6))
             modules.append(conv3x3(in_ch, in_ch, bias=True))
@@ -244,11 +245,13 @@ class NCSNpp(nn.Module):
             raise ValueError(f'{progressive} is not a valid name.')
         else:
           if progressive == 'output_skip':
+            
             modules.append(nn.GroupNorm(num_groups=min(in_ch // 4, 32),
                                         num_channels=in_ch, eps=1e-6))
             modules.append(conv3x3(in_ch, channels, bias=True, init_scale=init_scale))
             pyramid_ch = channels
           elif progressive == 'residual':
+            
             modules.append(pyramid_downsample(in_ch=pyramid_ch, out_ch=in_ch))
             pyramid_ch = in_ch
           else:
@@ -258,7 +261,7 @@ class NCSNpp(nn.Module):
         if resblock_type == 'ddpm':
           modules.append(Downsample(in_ch=in_ch))
         else:
-          modules.append(ResnetBlock(in_ch=in_ch, up=True))
+          modules.append(ResnetBlock(in_ch=in_ch , down=True)) #up=True
 
     assert not hs_c
 
@@ -277,6 +280,7 @@ class NCSNpp(nn.Module):
         mapping_layers.append(dense(z_emb_dim, z_emb_dim))
         mapping_layers.append(self.act)
     self.z_transform = nn.Sequential(*mapping_layers)
+    
     
 
   def forward(self, x, time_cond, z):
@@ -321,12 +325,16 @@ class NCSNpp(nn.Module):
     for i_level in range(self.num_resolutions):
       # Residual blocks for this resolution
       for i_block in range(self.num_res_blocks):
-        h = modules[m_idx](hs[-1], temb, zemb)
-        m_idx += 1
+        if isinstance(modules[m_idx] ,layerspp.ResnetBlockBigGANpp_Adagn):
+            h = modules[m_idx](hs[-1], temb, zemb)
+            m_idx += 1
+        else:
+            h = modules[m_idx](hs[-1])
+            m_idx += 1
         if h.shape[-1] in self.attn_resolutions:
           h = modules[m_idx](h)
           m_idx += 1
-
+        
         hs.append(h)
 
       if i_level != self.num_resolutions - 1:
@@ -350,13 +358,11 @@ class NCSNpp(nn.Module):
           else:
             input_pyramid = input_pyramid + h
           h = input_pyramid
-
+        
         hs.append(h)
 
     h = hs[-1]
     h = modules[m_idx](h, temb, zemb)
-    m_idx += 1
-    h = modules[m_idx](h)
     m_idx += 1
     h = modules[m_idx](h, temb, zemb)
     m_idx += 1
